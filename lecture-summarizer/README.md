@@ -113,62 +113,65 @@ lecsum ./강의.mp4 --whisper-model medium         # CPU 라서 느릴 때
 lecsum ./강의.mp4 --device cuda                  # GPU 있을 때
 ```
 
-## 강의 주소 찾기 (제일 중요)
+## 강의 주소 넣기
 
-한성대 LMS 강의 페이지 주소는 보통 이렇게 생겼습니다.
-
-```
-https://learn.hansung.ac.kr/mod/vod/view.php?id=1183874
-```
-
-이건 **영상 자체가 아니라 플레이어가 들어있는 페이지**입니다.
-실제 영상은 그 안에서 따로 불러오고, 로그인한 사람만 볼 수 있게 되어 있습니다.
-그래서 두 가지 방법이 있습니다.
-
-### 방법 A — 페이지 주소 그대로 (먼저 이걸 시도)
-
-브라우저에 로그인되어 있으면 그 세션을 빌려 씁니다. 한 줄이면 끝입니다.
+**강의 페이지 주소를 그대로 넣으면 됩니다.** 개발자도구를 열 필요 없습니다.
 
 ```bash
-lecsum "https://learn.hansung.ac.kr/mod/vod/view.php?id=1183874" \
-  --cookies-from-browser chrome --title "가상현실 3주차"
+lecsum "https://learn.hansung.ac.kr/mod/vod/viewer.php?id=1183874" \
+  --browser chrome --title "명품자바 1장 4-1"
 ```
 
-`chrome` 자리에 실제 쓰는 브라우저를 넣으세요 (`edge`, `firefox`, `whale`, `safari`).
-**되면 여기서 끝입니다.** 안 되면 (`403`, `Unsupported URL`, 빈 파일) 방법 B로 갑니다.
+`--browser` 에는 **LMS 에 로그인해 둔 브라우저** 이름을 넣으세요
+(`chrome`, `edge`, `firefox`, `whale`, `safari`).
+쿠키를 그 브라우저에서 직접 꺼내 쓰기 때문에, 쿠키 값을 어디에도 붙여넣지 않습니다.
 
-### 방법 B — Copy as cURL (확실한 방법, 1분)
+### 내부적으로 무슨 일이 일어나나
 
-플레이어가 실제로 받아 가는 주소를 그대로 가져옵니다.
+강의 페이지(`viewer.php`)는 영상이 아니라 **플레이어가 든 HTML** 입니다.
+실제 영상은 이런 주소로 따로 옵니다.
 
-1. LMS 에 로그인하고 강의 영상을 **재생**합니다.
-2. `F12` → **Network(네트워크)** 탭 → 필터 칸에 `m3u8` 입력
-   - 아무것도 안 뜨면 `mp4` 로, 그래도 없으면 `Media` 탭을 보세요.
-   - 영상이 이미 재생 중이었다면 `F5` 로 새로고침하고 다시 재생하세요.
-3. 목록에 뜬 요청을 **우클릭 → Copy → Copy as cURL**
-4. 그대로 `curl.txt` 에 붙여넣고 저장
+```
+https://oktop8mo7927.edge.naverncp.com/hls/uobtyoaUJ0eFGC97AE~6WQ__/.../index.m3u8
+```
+
+`lecsum` 이 이 주소를 대신 찾아냅니다 (`lecsum/resolve.py`). 순서대로:
+
+1. **페이지 HTML** 안에 `.m3u8` 이 박혀 있는지 정규식으로 본다.
+   JSON 이스케이프(`https:\/\/...`)도 풀어서 찾는다.
+2. 없으면 페이지가 부르는 **JSON/PHP 엔드포인트**를 따라가 그 안을 다시 뒤진다.
+   한성대 LMS 는 `viewer.php` 가 JS 로 메타데이터 JSON 을 받아오고 거기에 주소가 있다.
+   (`action.php` 같은 **출석 처리 요청은 건드리지 않는다** — 부작용이 있는 주소는 제외한다.)
+3. 그래도 없으면 **Playwright 로 브라우저를 띄워** 네트워크를 관찰한다.
+   개발자도구 Network 탭을 사람이 보는 것과 같은 일을, 사람 없이 한다.
+   ```bash
+   pip install playwright && playwright install chromium
+   ```
+   이게 싫으면 `--no-sniff` 로 끌 수 있다.
+
+찾아낸 스트림 주소는 인증 토큰이 경로에 들어 있어서, 그 다음 다운로드는 쿠키 없이도 됩니다.
+
+### 자동 탐색이 막혔을 때 — Copy as cURL
+
+LMS 가 구조를 바꾸면 1·2번이 실패할 수 있습니다. 그때는 확실한 수동 경로가 있습니다.
+
+1. 강의 영상을 **재생**한 상태에서 `F12` → **Network** 탭
+2. 필터에 `m3u8` 입력 → **`F5` 로 새로고침** 후 다시 재생
+   (Network 탭은 열려 있는 동안 오간 요청만 잡습니다. 이래서 새로고침이 필요합니다.)
+3. `index.m3u8` 줄 **우클릭 → Copy → Copy as cURL**
+4. `curl.txt` 로 저장하고:
 
 ```bash
-lecsum --curl-file curl.txt --title "가상현실 3주차"
+lecsum --curl-file curl.txt --title "명품자바 1장 4-1"
 ```
 
-URL·Referer·Cookie·User-Agent 를 **알아서 다 뽑아 씁니다.** 손으로 옮길 필요 없습니다.
-(윈도우 cmd·파워셸에서 복사한 형식도 읽습니다.)
+URL·Referer·Cookie·User-Agent 를 알아서 뽑습니다. bash/cmd/파워셸 형식 모두 읽습니다.
+터미널에 바로 붙여넣으려면 `--curl-file -` (붙여넣고 `Ctrl+D`, 윈도우는 `Ctrl+Z` `Enter`).
 
-터미널에 바로 붙여넣고 싶으면:
-
-```bash
-lecsum --curl-file - --title "가상현실 3주차"    # 붙여넣고 Ctrl+D (윈도우는 Ctrl+Z, Enter)
-```
-
-수동으로 주고 싶다면 여전히 이렇게도 됩니다.
-
-```bash
-lecsum "붙여넣은_m3u8_주소" --title "과목명 N주차" \
-  --referer "https://learn.hansung.ac.kr/" --cookie "$(cat cookie.txt)"
-```
-
-> 쿠키는 보통 몇 시간이면 만료됩니다. `403`/`401` 이 나면 3번부터 다시 하세요.
+> **쿠키를 남에게 주지 마세요.** LMS 세션 쿠키는 성적·수강신청까지 접근되는 로그인 상태
+> 그 자체입니다. `--browser` 는 쿠키가 본인 PC 밖으로 나가지 않게 하려고 만든 옵션입니다.
+>
+> 쿠키는 보통 몇 시간이면 만료됩니다. `403`/`401` 이 나면 다시 로그인하고 재실행하세요.
 > 내려받은 영상은 **본인 수강 과목의 개인 학습용**으로만 쓰세요.
 > 재배포·공유는 학칙과 저작권법 위반입니다. 기본 동작은 요약이 끝나면 영상 파일을 지웁니다
 > (`--keep-video` 로 유지 가능).
@@ -209,6 +212,8 @@ CPU 만 있다면 `--whisper-model medium` 으로 시작하세요. 한국어도 
 | 다운로드가 중간에 멈춤 | m3u8 세그먼트가 끊긴 것. 같은 명령 다시 실행 |
 | `NVIDIA_API_KEY 가 없습니다` | `.env` 에 키가 없음. `--skip-summary` 로 텍스트만 뽑는 건 가능 |
 | `LLM API 오류 404` | `.env` 의 `LECSUM_LLM_MODEL` 이름이 카탈로그와 다름 |
+| `스트림 주소를 찾지 못했습니다` | `--browser chrome` 을 붙이거나, Copy as cURL 방식으로 |
+| 브라우저 쿠키 추출 실패 | 그 브라우저를 **완전히 종료**하고 다시 실행 (DB 잠김) |
 | 인식 결과가 엉망 | 강의 오디오가 작을 때. `--whisper-model large-v3` 로 올려 보세요 |
 | 같은 문장이 계속 반복됨 | whisper 의 알려진 증상. 이미 `condition_on_previous_text=False` 로 막아 둠 |
 
@@ -218,6 +223,7 @@ CPU 만 있다면 `--whisper-model medium` 으로 시작하세요. 한국어도 
 lecsum/
   cli.py                 명령줄 + 전체 파이프라인
   download.py            ffmpeg / yt-dlp 로 영상 받기
+  resolve.py             페이지 주소 → 실제 m3u8 주소 자동 탐색
   curlparse.py           "Copy as cURL" 에서 URL·쿠키 뽑기
   audio.py               16kHz 모노 추출, 조각 내기
   transcribe.py          음성인식 (whisper / OpenAI 호환)

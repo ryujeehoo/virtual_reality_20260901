@@ -8,6 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lecsum.curlparse import parse_curl
+from lecsum.resolve import _endpoint_candidates, find_streams
 from lecsum.summarize import chunk_transcript
 from lecsum.transcribe import Segment, Transcript
 from lecsum.transcript_signals import collect_signals
@@ -102,6 +103,43 @@ def test_parse_curl_rejects_junk():
         assert "cURL" in str(exc)
     else:
         raise AssertionError("cURL 이 아닌 입력을 통과시켰다")
+
+
+REAL_STREAM = (
+    "https://oktop8mo7927.edge.naverncp.com/hls/uobtyoaUJ0eFGC97AE~6WQ__/"
+    "459b8e7e-fb20-425e-9f7a-bc31b386a10d/mp4/"
+    "459b8e7e-fb20-425e-9f7a-bc31b386a10d.mp4/index.m3u8"
+)
+
+PAGE_URL = "https://learn.hansung.ac.kr/mod/vod/viewer.php?id=1183874"
+
+
+def test_finds_stream_in_escaped_json():
+    # JSON 안에서는 슬래시가 이스케이프되어 있다.
+    body = '{"source":"' + REAL_STREAM.replace("/", "\\/") + '","type":"hls"}'
+    assert find_streams(body) == [REAL_STREAM]
+
+
+def test_finds_stream_in_plain_html():
+    html = f'<video><source src="{REAL_STREAM}" type="application/x-mpegURL"></video>'
+    assert find_streams(html) == [REAL_STREAM]
+
+
+def test_m3u8_wins_over_mp4():
+    # 경로에 .mp4 가 들어 있어도 최종 재생목록인 m3u8 을 골라야 한다.
+    html = f'<a href="https://cdn.example/x.mp4"></a><script>src="{REAL_STREAM}"</script>'
+    assert find_streams(html) == [REAL_STREAM]
+
+
+def test_endpoint_candidates_skip_side_effects():
+    html = (
+        '<script src="/mod/vod/js/d5zFAlMi.js"></script>'
+        '<script>fetch("/mod/vod/aThGRmZAEeOxhCIACmOLpg.json");'
+        'fetch("/mod/vod/action.php");'          # 출석처리 — 건드리면 안 된다
+        'fetch("https://other.example/x.json")</script>'  # 다른 사이트 — 제외
+    )
+    found = _endpoint_candidates(html, PAGE_URL)
+    assert found == ["https://learn.hansung.ac.kr/mod/vod/aThGRmZAEeOxhCIACmOLpg.json"]
 
 
 if __name__ == "__main__":

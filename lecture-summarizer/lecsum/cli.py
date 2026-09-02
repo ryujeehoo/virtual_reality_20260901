@@ -8,10 +8,12 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from .audio import extract_audio
 from .config import Settings, load_env
 from .curlparse import parse_curl
+from .resolve import browser_cookie_header
 from .download import FetchOptions, fetch_video
 from .summarize import summarize
 from .transcribe import Transcript, transcribe
@@ -28,7 +30,11 @@ def build_parser() -> argparse.ArgumentParser:
   lecsum "https://cdn.example/vod/abc.m3u8" --title "가상현실 3주차" \\
       --referer "https://learn.hansung.ac.kr/" --cookie "$(cat cookie.txt)"
 
-  # 개발자도구에서 Copy as cURL 한 걸 붙여넣기만 하면 끝
+  # 강의 페이지 주소만. 쿠키는 브라우저에서 알아서 꺼내 씁니다.
+  lecsum "https://learn.hansung.ac.kr/mod/vod/viewer.php?id=1183874" \
+      --browser chrome --title "명품자바 1장"
+
+  # 자동 탐색이 막히면 개발자도구에서 Copy as cURL 한 걸 넘기면 끝
   lecsum --curl-file curl.txt --title "가상현실 3주차"
 
   lecsum ./내려받은강의.mp4 --title "가상현실 3주차"
@@ -50,8 +56,18 @@ def build_parser() -> argparse.ArgumentParser:
     net.add_argument("--cookie", help="Cookie 헤더 값 전체")
     net.add_argument("--cookies-file", type=Path, help="Netscape 형식 쿠키 파일 (yt-dlp 용)")
     net.add_argument(
+        "--browser",
+        help="로그인해 둔 브라우저 이름 (chrome/edge/firefox/whale/safari). "
+             "쿠키를 직접 꺼내 쓰므로 쿠키를 손으로 옮길 필요가 없습니다.",
+    )
+    net.add_argument(
         "--cookies-from-browser",
-        help="브라우저에서 쿠키 자동 추출 (chrome/edge/firefox/whale ...)",
+        help="yt-dlp 에 넘길 브라우저 이름. 보통은 --browser 만 쓰면 됩니다.",
+    )
+    net.add_argument(
+        "--no-sniff",
+        action="store_true",
+        help="스트림 주소를 못 찾아도 브라우저(Playwright)를 띄우지 않는다",
     )
     net.add_argument("--header", action="append", default=[], help="추가 헤더. 'Origin: https://...' 형식")
     net.add_argument(
@@ -122,11 +138,26 @@ def _apply_curl_file(args: argparse.Namespace) -> None:
         log("경고: cURL 에 Cookie 헤더가 없습니다. 로그인이 필요한 강의라면 403 이 날 수 있습니다.")
 
 
+def _apply_browser_cookies(args: argparse.Namespace) -> None:
+    """--browser 가 주어지면 그 브라우저에서 강의 사이트 쿠키를 직접 꺼낸다.
+
+    사용자가 쿠키 문자열을 어디에도 붙여넣지 않아도 되게 하는 부분이다.
+    """
+    if not args.browser or args.cookie or not args.source:
+        return
+    if not args.source.lower().startswith(("http://", "https://")):
+        return
+    domain = urlsplit(args.source).netloc
+    args.cookie = browser_cookie_header(args.browser, domain)
+    args.cookies_from_browser = args.cookies_from_browser or args.browser
+
+
 def run_pipeline(args: argparse.Namespace) -> int:
     load_env()
     _apply_curl_file(args)
     if not args.source:
         raise LecsumError("강의 주소나 파일을 지정하세요. (또는 --curl-file 사용)")
+    _apply_browser_cookies(args)
     settings = _apply_overrides(Settings.from_env(), args)
 
     title = args.title or Path(args.source).stem or "강의 노트"
@@ -145,6 +176,7 @@ def run_pipeline(args: argparse.Namespace) -> int:
             cookies_file=args.cookies_file,
             cookies_from_browser=args.cookies_from_browser,
             extra_headers=args.header,
+            use_browser=not args.no_sniff,
         )
         video = fetch_video(args.source, workdir, opts, name=title)
 

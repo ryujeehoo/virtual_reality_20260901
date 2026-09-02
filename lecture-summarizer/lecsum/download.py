@@ -12,10 +12,11 @@ m3u8 주소 + Referer + Cookie 조합이 가장 잘 통한다. README 의 "강�
 from __future__ import annotations
 
 import shutil
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from urllib.parse import urlparse
 
+from .resolve import resolve_stream
 from .utils import LecsumError, log, require_binary, run, slugify
 
 
@@ -30,6 +31,7 @@ class FetchOptions:
         "(KHTML, like Gecko) Chrome/126.0 Safari/537.36"
     )
     extra_headers: list[str] = field(default_factory=list)
+    use_browser: bool = True
 
     def header_pairs(self) -> list[tuple[str, str]]:
         pairs: list[tuple[str, str]] = []
@@ -118,5 +120,18 @@ def fetch_video(source: str, workdir: Path, opts: FetchOptions, *, name: str | N
         log("스트림 주소로 판단 → ffmpeg 으로 내려받습니다.")
         return _download_with_ffmpeg(source, dest, opts)
 
-    log("페이지 주소로 판단 → yt-dlp 로 내려받습니다.")
-    return _download_with_ytdlp(source, dest, opts)
+    # 강의 페이지 주소다. 개발자도구를 손으로 여는 대신 스트림 주소를 찾아낸다.
+    log("페이지 주소로 판단 → 스트림 주소를 찾습니다.")
+    try:
+        resolved = resolve_stream(source, cookie=opts.cookie, use_browser=opts.use_browser)
+    except LecsumError as exc:
+        if not shutil.which("yt-dlp"):
+            raise
+        log(f"자동 탐색 실패({exc}). yt-dlp 로 한 번 더 시도합니다.")
+        return _download_with_ytdlp(source, dest, opts)
+
+    log(f"찾았습니다 ({resolved.how}). 내려받습니다.")
+    stream_opts = replace(opts, referer=opts.referer or resolved.referer)
+    if _is_direct_stream(resolved.url):
+        return _download_with_ffmpeg(resolved.url, dest, stream_opts)
+    return _download_with_ytdlp(resolved.url, dest, stream_opts)
