@@ -178,11 +178,42 @@ URL·Referer·Cookie·User-Agent 를 알아서 뽑습니다. bash/cmd/파워셸 
 
 ## 다른 컴퓨터 / GPU 없이 쓰기 (Google Colab)
 
-노트북이 느리거나 학교 컴퓨터에서 쓸 때는 Colab 이 가장 편합니다. GPU 가 공짜입니다.
+### 왜 나눠야 하나
 
-저장소가 비공개이므로 읽기 전용 GitHub 토큰이 하나 필요합니다 — 노트북 1번 셀에 만드는 법이 적혀 있습니다.
-`notebooks/lecsum_colab.ipynb` 를 Colab 에 올리고 위에서부터 실행하세요.
-런타임 유형을 **T4 GPU** 로 바꾸면 한 시간짜리 강의가 5분 안에 텍스트로 나옵니다.
+Colab 은 구글 서버에서 돌아갑니다. **내 브라우저의 LMS 로그인 세션이 거기 없습니다.**
+그래서 강의 주소를 Colab 에 넣어도 받아지지 않습니다. 단계를 나눠야 합니다.
+
+| 단계 | 어디서 | 왜 |
+|---|---|---|
+| 영상 받기 | **내 PC** | 로그인 세션이 여기 있다 |
+| 음성인식 + 요약 | **Colab** | GPU 가 여기 있다 |
+
+### 1) 내 PC — 오디오까지만 만들기
+
+```bash
+lecsum "https://learn.hansung.ac.kr/mod/vod/viewer.php?id=1183874" \
+  --browser chrome --title "명품자바 1장" --download-only
+```
+
+`out/명품자바-1장/명품자바-1장.m4a` 가 나옵니다. 1시간 강의가 **20~30MB** 정도라
+업로드가 금방입니다 (원본 영상은 1GB 가 넘습니다). 영상 파일은 자동으로 지웁니다.
+
+### 2) Colab — 무거운 일
+
+1. `notebooks/lecsum_colab.ipynb` 를 Colab 에서 엽니다.
+2. `런타임 → 런타임 유형 변경 → T4 GPU`
+3. 왼쪽 폴더 아이콘에 위에서 만든 `.m4a` 를 드래그
+4. 셀을 위에서부터 실행
+
+저장소가 비공개라 읽기 전용 GitHub 토큰이 하나 필요합니다 — 노트북 1번 셀에 만드는 법이 있습니다.
+
+### 전부 내 PC 에서 하려면
+
+GPU 가 없어도 됩니다. 느릴 뿐입니다.
+
+```bash
+lecsum "강의_페이지_주소" --browser chrome --title "명품자바 1장" --whisper-model medium
+```
 
 ## 음성인식 백엔드
 

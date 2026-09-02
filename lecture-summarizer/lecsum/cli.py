@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .audio import extract_audio
+from .audio import extract_audio, to_compressed
 from .config import Settings, load_env
 from .curlparse import parse_curl
 from .resolve import browser_cookie_header
@@ -94,6 +94,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="source 를 이미 만들어 둔 transcript.json 으로 보고 요약만 다시 한다",
     )
     flow.add_argument("--keep-video", action="store_true", help="내려받은 영상 파일을 지우지 않는다")
+    flow.add_argument(
+        "--download-only",
+        action="store_true",
+        help="영상만 받아 업로드용 오디오(.m4a)까지 만들고 끝낸다. "
+             "다운로드는 내 PC 에서, 음성인식은 Colab 에서 하고 싶을 때.",
+    )
     return parser
 
 
@@ -182,6 +188,18 @@ def run_pipeline(args: argparse.Namespace) -> int:
 
         # 2. 음성 추출
         audio = extract_audio(video, workdir / "audio.wav")
+
+        if args.download_only:
+            # Colab 에 올릴 것을 생각해 용량을 줄인다. 1시간 강의가 20~30MB 쯤 된다.
+            packed = to_compressed(audio, workdir / f"{slugify(title)}.m4a")
+            audio.unlink(missing_ok=True)
+            if not args.keep_video and video.parent == workdir:
+                video.unlink(missing_ok=True)
+            size = packed.stat().st_size / 1e6
+            log(f"오디오 준비 완료: {packed} ({size:.1f} MB)")
+            print(f"\n이 파일을 Colab 에 올린 뒤 이렇게 실행하세요:\n"
+                  f"  lecsum \"{packed.name}\" --title \"{title}\"")
+            return 0
 
         # 3. 음성 인식
         transcript = transcribe(audio, settings, workdir)
