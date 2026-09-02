@@ -7,6 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from lecsum.curlparse import parse_curl
 from lecsum.summarize import chunk_transcript
 from lecsum.transcribe import Segment, Transcript
 from lecsum.transcript_signals import collect_signals
@@ -62,6 +63,45 @@ def test_chunking_respects_limit():
     assert len(chunks) > 1
     assert all(len(body) <= 1200 for _, body in chunks)
     assert chunks[0][0] == 0.0
+
+
+CURL_BASH = """curl 'https://vod.hansung.ac.kr/vod/2026/abc/index.m3u8?tk=x' \\
+  -H 'Referer: https://learn.hansung.ac.kr/' \\
+  -H 'Cookie: MoodleSession=abc123; lang=ko' \\
+  -H 'User-Agent: Mozilla/5.0 (Windows NT 10.0)' \\
+  -H 'Origin: https://learn.hansung.ac.kr' \\
+  --compressed"""
+
+CURL_CMD = (
+    'curl "https://vod.hansung.ac.kr/vod/abc/index.m3u8" ^\n'
+    '  -H "Referer: https://learn.hansung.ac.kr/" ^\n'
+    '  -H "Cookie: MoodleSession=abc123"'
+)
+
+
+def test_parse_curl_bash():
+    req = parse_curl(CURL_BASH)
+    assert req.url == "https://vod.hansung.ac.kr/vod/2026/abc/index.m3u8?tk=x"
+    assert req.referer == "https://learn.hansung.ac.kr/"
+    assert req.cookie == "MoodleSession=abc123; lang=ko"
+    assert req.user_agent.startswith("Mozilla/5.0")
+    # Referer/Cookie/UA 는 전용 옵션으로 가고, 나머지만 --header 로 넘어간다.
+    assert req.other_headers() == ["Origin: https://learn.hansung.ac.kr"]
+
+
+def test_parse_curl_windows_cmd():
+    req = parse_curl(CURL_CMD)
+    assert req.url.endswith("index.m3u8")
+    assert req.cookie == "MoodleSession=abc123"
+
+
+def test_parse_curl_rejects_junk():
+    try:
+        parse_curl("https://example.com/a.m3u8")
+    except Exception as exc:
+        assert "cURL" in str(exc)
+    else:
+        raise AssertionError("cURL 이 아닌 입력을 통과시켰다")
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 # lecsum — 강의 영상 → 텍스트 → 시험 대비 노트
 
-한성대 eclass(코스모스/LMS)처럼 웹으로 듣는 강의 영상을 **주소만 넣으면**
+한성대 LMS(learn.hansung.ac.kr, 코스모스/무들 기반)처럼 웹으로 듣는 강의 영상을 **주소만 넣으면**
 내려받아서 → 음성인식으로 텍스트를 만들고 → 시험에 나올 만한 것 위주로 정리해 줍니다.
 
 블렌디드 수업이라 절반이 사이버 강의인 상황을 염두에 두고 만들었습니다.
@@ -99,7 +99,7 @@ lecsum ./3주차강의.mp4 --title "가상현실 3주차"
 ```bash
 lecsum "https://cdn.example.com/vod/abcd.m3u8" \
   --title "가상현실 3주차" \
-  --referer "https://eclass.hansung.ac.kr/" \
+  --referer "https://learn.hansung.ac.kr/" \
   --cookie "$(cat cookie.txt)"
 ```
 
@@ -113,27 +113,59 @@ lecsum ./강의.mp4 --whisper-model medium         # CPU 라서 느릴 때
 lecsum ./강의.mp4 --device cuda                  # GPU 있을 때
 ```
 
-## eclass 강의 주소 찾기
+## 강의 주소 찾기 (제일 중요)
 
-eclass 영상은 로그인한 사람만 볼 수 있게 되어 있어서, 브라우저에 보이는 페이지 주소가
-아니라 **실제 스트림 주소**를 넣어야 확실합니다. 1분이면 됩니다.
+한성대 LMS 강의 페이지 주소는 보통 이렇게 생겼습니다.
 
-1. eclass 에 로그인하고 강의 영상을 **재생**합니다.
+```
+https://learn.hansung.ac.kr/mod/vod/view.php?id=1183874
+```
+
+이건 **영상 자체가 아니라 플레이어가 들어있는 페이지**입니다.
+실제 영상은 그 안에서 따로 불러오고, 로그인한 사람만 볼 수 있게 되어 있습니다.
+그래서 두 가지 방법이 있습니다.
+
+### 방법 A — 페이지 주소 그대로 (먼저 이걸 시도)
+
+브라우저에 로그인되어 있으면 그 세션을 빌려 씁니다. 한 줄이면 끝입니다.
+
+```bash
+lecsum "https://learn.hansung.ac.kr/mod/vod/view.php?id=1183874" \
+  --cookies-from-browser chrome --title "가상현실 3주차"
+```
+
+`chrome` 자리에 실제 쓰는 브라우저를 넣으세요 (`edge`, `firefox`, `whale`, `safari`).
+**되면 여기서 끝입니다.** 안 되면 (`403`, `Unsupported URL`, 빈 파일) 방법 B로 갑니다.
+
+### 방법 B — Copy as cURL (확실한 방법, 1분)
+
+플레이어가 실제로 받아 가는 주소를 그대로 가져옵니다.
+
+1. LMS 에 로그인하고 강의 영상을 **재생**합니다.
 2. `F12` → **Network(네트워크)** 탭 → 필터 칸에 `m3u8` 입력
-3. 목록에 뜨는 요청 하나를 **우클릭 → Copy → Copy link address**
-   - `.m3u8` 이 안 보이면 `mp4` 로도 찾아보세요.
-4. 같은 요청에서 **우클릭 → Copy → Copy as cURL** 해 두면 `Referer` 와 `Cookie` 값도 보입니다.
-   `Cookie` 값 전체를 `cookie.txt` 에 저장해 두면 편합니다.
+   - 아무것도 안 뜨면 `mp4` 로, 그래도 없으면 `Media` 탭을 보세요.
+   - 영상이 이미 재생 중이었다면 `F5` 로 새로고침하고 다시 재생하세요.
+3. 목록에 뜬 요청을 **우클릭 → Copy → Copy as cURL**
+4. 그대로 `curl.txt` 에 붙여넣고 저장
+
+```bash
+lecsum --curl-file curl.txt --title "가상현실 3주차"
+```
+
+URL·Referer·Cookie·User-Agent 를 **알아서 다 뽑아 씁니다.** 손으로 옮길 필요 없습니다.
+(윈도우 cmd·파워셸에서 복사한 형식도 읽습니다.)
+
+터미널에 바로 붙여넣고 싶으면:
+
+```bash
+lecsum --curl-file - --title "가상현실 3주차"    # 붙여넣고 Ctrl+D (윈도우는 Ctrl+Z, Enter)
+```
+
+수동으로 주고 싶다면 여전히 이렇게도 됩니다.
 
 ```bash
 lecsum "붙여넣은_m3u8_주소" --title "과목명 N주차" \
-  --referer "https://eclass.hansung.ac.kr/" --cookie "$(cat cookie.txt)"
-```
-
-브라우저 로그인 세션을 그대로 쓰고 싶으면 (yt-dlp 사용):
-
-```bash
-lecsum "강의_페이지_주소" --cookies-from-browser chrome --title "과목명 N주차"
+  --referer "https://learn.hansung.ac.kr/" --cookie "$(cat cookie.txt)"
 ```
 
 > 쿠키는 보통 몇 시간이면 만료됩니다. `403`/`401` 이 나면 3번부터 다시 하세요.
@@ -186,6 +218,7 @@ CPU 만 있다면 `--whisper-model medium` 으로 시작하세요. 한국어도 
 lecsum/
   cli.py                 명령줄 + 전체 파이프라인
   download.py            ffmpeg / yt-dlp 로 영상 받기
+  curlparse.py           "Copy as cURL" 에서 URL·쿠키 뽑기
   audio.py               16kHz 모노 추출, 조각 내기
   transcribe.py          음성인식 (whisper / OpenAI 호환)
   transcript_signals.py  반복 용어·강조 표현 추출  ← ⭐의 근거

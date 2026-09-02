@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .audio import extract_audio
 from .config import Settings, load_env
+from .curlparse import parse_curl
 from .download import FetchOptions, fetch_video
 from .summarize import summarize
 from .transcribe import Transcript, transcribe
@@ -25,7 +26,10 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""예시
   lecsum "https://cdn.example/vod/abc.m3u8" --title "가상현실 3주차" \\
-      --referer "https://eclass.hansung.ac.kr/" --cookie "$(cat cookie.txt)"
+      --referer "https://learn.hansung.ac.kr/" --cookie "$(cat cookie.txt)"
+
+  # 개발자도구에서 Copy as cURL 한 걸 붙여넣기만 하면 끝
+  lecsum --curl-file curl.txt --title "가상현실 3주차"
 
   lecsum ./내려받은강의.mp4 --title "가상현실 3주차"
 
@@ -33,12 +37,16 @@ def build_parser() -> argparse.ArgumentParser:
   lecsum ./transcript.json --from-transcript --title "..."   # 요약만 다시
 """,
     )
-    parser.add_argument("source", help="강의 영상 URL(.m3u8/.mp4/플레이어 페이지) 또는 로컬 파일")
+    parser.add_argument(
+        "source",
+        nargs="?",
+        help="강의 영상 URL(.m3u8/.mp4/플레이어 페이지) 또는 로컬 파일. --curl-file 을 쓰면 생략",
+    )
     parser.add_argument("--title", help="노트 제목 (기본: 파일 이름)")
     parser.add_argument("-o", "--outdir", type=Path, help="결과 폴더 (기본: out/)")
 
     net = parser.add_argument_group("네트워크 / 로그인")
-    net.add_argument("--referer", help="스트림이 요구하는 Referer (보통 eclass 주소)")
+    net.add_argument("--referer", help="스트림이 요구하는 Referer (보통 LMS 주소)")
     net.add_argument("--cookie", help="Cookie 헤더 값 전체")
     net.add_argument("--cookies-file", type=Path, help="Netscape 형식 쿠키 파일 (yt-dlp 용)")
     net.add_argument(
@@ -46,6 +54,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="브라우저에서 쿠키 자동 추출 (chrome/edge/firefox/whale ...)",
     )
     net.add_argument("--header", action="append", default=[], help="추가 헤더. 'Origin: https://...' 형식")
+    net.add_argument(
+        "--curl-file",
+        type=Path,
+        help="개발자도구에서 'Copy as cURL' 한 내용을 저장한 파일. "
+             "URL·Referer·Cookie 를 알아서 뽑아 씁니다. ('-' 이면 표준입력)",
+    )
 
     asr = parser.add_argument_group("음성 인식")
     asr.add_argument("--asr", choices=["whisper", "openai"], help="백엔드 (기본: whisper, 로컬)")
@@ -92,8 +106,27 @@ def _load_transcript(path: Path) -> Transcript:
     return Transcript([Segment(start=d["start"], end=d["end"], text=d["text"]) for d in data])
 
 
+def _apply_curl_file(args: argparse.Namespace) -> None:
+    """--curl-file 내용에서 URL 과 헤더를 채운다. 직접 준 옵션이 우선한다."""
+    if not args.curl_file:
+        return
+    raw = sys.stdin.read() if str(args.curl_file) == "-" else args.curl_file.read_text(encoding="utf-8")
+    request = parse_curl(raw)
+
+    args.source = args.source or request.url
+    args.referer = args.referer or request.referer
+    args.cookie = args.cookie or request.cookie
+    args.header = list(args.header) + request.other_headers()
+    log(f"cURL 에서 주소를 읽었습니다: {request.url[:90]}")
+    if not request.cookie:
+        log("경고: cURL 에 Cookie 헤더가 없습니다. 로그인이 필요한 강의라면 403 이 날 수 있습니다.")
+
+
 def run_pipeline(args: argparse.Namespace) -> int:
     load_env()
+    _apply_curl_file(args)
+    if not args.source:
+        raise LecsumError("강의 주소나 파일을 지정하세요. (또는 --curl-file 사용)")
     settings = _apply_overrides(Settings.from_env(), args)
 
     title = args.title or Path(args.source).stem or "강의 노트"
