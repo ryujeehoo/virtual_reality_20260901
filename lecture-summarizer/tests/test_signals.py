@@ -8,7 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lecsum.curlparse import parse_curl
-from lecsum.resolve import _endpoint_candidates, find_streams
+from lecsum.resolve import _endpoint_candidates, find_streams, looks_like_login_page
 from lecsum.summarize import chunk_transcript
 from lecsum.transcribe import Segment, Transcript
 from lecsum.transcript_signals import collect_signals
@@ -140,6 +140,16 @@ def test_endpoint_candidates_skip_side_effects():
     )
     found = _endpoint_candidates(html, PAGE_URL)
     assert found == ["https://learn.hansung.ac.kr/mod/vod/aThGRmZAEeOxhCIACmOLpg.json"]
+
+
+def test_login_page_detected():
+    # 쿠키가 안 먹으면 무들은 강의 페이지 대신 로그인 폼을 준다.
+    assert looks_like_login_page('<form action="/login/index.php" id="loginform">')
+    assert looks_like_login_page('<input id="username" name="username">')
+
+
+def test_real_page_not_mistaken_for_login():
+    assert not looks_like_login_page(f'<video><source src="{REAL_STREAM}"></video>')
 
 
 if __name__ == "__main__":

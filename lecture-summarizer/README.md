@@ -122,9 +122,13 @@ lecsum "https://learn.hansung.ac.kr/mod/vod/viewer.php?id=1183874" \
   --browser chrome --title "명품자바 1장 4-1"
 ```
 
-`--browser` 에는 **LMS 에 로그인해 둔 브라우저** 이름을 넣으세요
-(`chrome`, `edge`, `firefox`, `whale`, `safari`).
+`--browser` 에는 **LMS 에 로그인해 둔 브라우저** 이름을 넣으세요.
 쿠키를 그 브라우저에서 직접 꺼내 쓰기 때문에, 쿠키 값을 어디에도 붙여넣지 않습니다.
+
+> ⚠️ **크롬·엣지는 안 될 수 있습니다.** 크롬 127 버전부터 쿠키를 앱 바운드 암호화로
+> 잠가서, 크롬 자신 말고는 아무도 못 읽습니다 (`Failed to decrypt with DPAPI`).
+> 우회할 방법이 없습니다. **파이어폭스는 잘 됩니다** (`--browser firefox`).
+> 크롬을 계속 쓰실 거면 아래 **Copy as cURL** 방식을 쓰세요 — 설치할 것도 없고 가장 확실합니다.
 
 ### 내부적으로 무슨 일이 일어나나
 
@@ -245,7 +249,9 @@ CPU 만 있다면 `--whisper-model medium` 으로 시작하세요. 한국어도 
 | `NVIDIA_API_KEY 가 없습니다` | `.env` 에 키가 없음. `--skip-summary` 로 텍스트만 뽑는 건 가능 |
 | `LLM API 오류 404` | `.env` 의 `LECSUM_LLM_MODEL` 이름이 카탈로그와 다름 |
 | `스트림 주소를 찾지 못했습니다` | `--browser chrome` 을 붙이거나, Copy as cURL 방식으로 |
-| 브라우저 쿠키 추출 실패 | 그 브라우저를 **완전히 종료**하고 다시 실행 (DB 잠김) |
+| `Failed to decrypt with DPAPI` | **크롬 127+ 는 쿠키를 잠급니다.** 우회 불가. `--curl-file` 을 쓰거나 `--browser firefox` |
+| `로그인 화면이 돌아왔습니다` | 쿠키가 안 넘어간 것. 위와 같음 |
+| 브라우저 쿠키 추출 실패 (그 외) | 그 브라우저를 **완전히 종료**하고 다시 실행 (DB 잠김) |
 | 인식 결과가 엉망 | 강의 오디오가 작을 때. `--whisper-model large-v3` 로 올려 보세요 |
 | 같은 문장이 계속 반복됨 | whisper 의 알려진 증상. 이미 `condition_on_previous_text=False` 로 막아 둠 |
 

@@ -73,6 +73,15 @@ def find_streams(text: str) -> list[str]:
     return list(dict.fromkeys(MP4_RE.findall(body)))
 
 
+LOGIN_HINTS = ("login/index.php", "loginform", "sso.hansung", "id=\"username\"", "로그인이 필요")
+
+
+def looks_like_login_page(html: str) -> bool:
+    """로그인 화면이 대신 돌아왔는지 본다. 쿠키가 안 먹었다는 뜻이다."""
+    lowered = html.lower()
+    return sum(hint.lower() in lowered for hint in LOGIN_HINTS) >= 1
+
+
 @dataclass
 class Resolved:
     url: str
@@ -102,6 +111,19 @@ def resolve_from_page(page_url: str, *, cookie: str | None = None) -> Resolved |
 
     log(f"페이지를 읽는 중: {page_url}")
     html = http_get(page_url, cookie=cookie, referer=referer)
+
+    if looks_like_login_page(html):
+        raise LecsumError(
+            "강의 페이지 대신 로그인 화면이 돌아왔습니다. 로그인 쿠키가 넘어가지 않았습니다.\n"
+            + ("  쿠키를 하나도 못 꺼냈습니다.\n" if not cookie else "  쿠키는 보냈지만 거부됐습니다 (만료되었을 수 있습니다).\n")
+            + "\n"
+            "가장 확실한 방법 — Copy as cURL (설치할 것 없음):\n"
+            "  1. 강의 영상을 재생한 채로 F12 → Network 탭\n"
+            "  2. 필터에 m3u8 입력 → F5 로 새로고침 → 다시 재생\n"
+            "  3. index.m3u8 우클릭 → Copy → Copy as cURL\n"
+            "  4. curl.txt 로 저장한 뒤:\n"
+            "     lecsum --curl-file curl.txt --title \"제목\""
+        )
 
     streams = find_streams(html)
     if streams:
@@ -211,8 +233,25 @@ def browser_cookie_header(browser: str, domain: str) -> str | None:
 
     try:
         jar = extract_cookies_from_browser(browser.lower())
-    except Exception as exc:  # 브라우저가 실행 중이면 DB 가 잠겨 있을 수 있다.
+    except Exception as exc:
+        # 크롬 127+ 는 앱 바운드 암호화로 쿠키를 잠근다. 크롬 자신 말고는 못 읽는다.
+        if "DPAPI" in str(exc) or "decrypt" in str(exc).lower():
+            raise LecsumError(
+                f"{browser} 의 쿠키를 읽을 수 없습니다 (앱 바운드 암호화).\n"
+                "크롬 127 버전부터 쿠키를 크롬 자신만 풀 수 있게 잠갔습니다. 우회할 방법이 없습니다.\n"
+                "\n"
+                "다음 중 하나를 쓰세요.\n"
+                "  1) Copy as cURL — 지금 바로 됩니다. 설치할 것 없습니다.\n"
+                "     영상 재생 → F12 → Network → 필터 m3u8 → F5 →\n"
+                "     index.m3u8 우클릭 → Copy → Copy as cURL → curl.txt 로 저장\n"
+                "     lecsum --curl-file curl.txt --title \"제목\"\n"
+                "\n"
+                "  2) 파이어폭스로 LMS 에 로그인한 뒤 --browser firefox\n"
+                "     (파이어폭스는 이 잠금을 쓰지 않습니다)"
+            ) from exc
+        # 브라우저가 실행 중이면 쿠키 DB 가 잠겨 있을 수 있다.
         log(f"브라우저 쿠키를 꺼내지 못했습니다: {exc}")
+        log(f"{browser} 를 완전히 종료한 뒤 다시 실행해 보세요.")
         return None
 
     host = domain.lower()
