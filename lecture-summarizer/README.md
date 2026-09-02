@@ -64,7 +64,7 @@ sudo apt install ffmpeg
 ### 2. 이 프로그램
 
 ```bash
-git clone <이 저장소 주소>
+git clone https://github.com/ryujeehoo/lecture-summarizer.git
 cd lecture-summarizer
 
 python -m venv .venv
