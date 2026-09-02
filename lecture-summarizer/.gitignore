@@ -1,0 +1,13 @@
+.env
+out/
+*.mp4
+*.m4a
+*.wav
+*.ts
+cookie.txt
+cookies.txt
+__pycache__/
+*.pyc
+.venv/
+venv/
+.DS_Store

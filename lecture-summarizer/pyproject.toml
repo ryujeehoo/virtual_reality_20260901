@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lecsum"
+version = "0.1.0"
+description = "온라인 강의 영상 주소만 넣으면 텍스트로 옮기고 시험 대비 노트로 정리합니다."
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+local = ["faster-whisper>=1.0.3"]
+download = ["yt-dlp>=2024.8.6"]
+all = ["faster-whisper>=1.0.3", "yt-dlp>=2024.8.6"]
+
+[project.scripts]
+lecsum = "lecsum.cli:main"
+
+[tool.setuptools]
+packages = ["lecsum"]
