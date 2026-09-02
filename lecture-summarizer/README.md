@@ -180,6 +180,7 @@ URL·Referer·Cookie·User-Agent 를 알아서 뽑습니다. bash/cmd/파워셸 
 
 노트북이 느리거나 학교 컴퓨터에서 쓸 때는 Colab 이 가장 편합니다. GPU 가 공짜입니다.
 
+저장소가 비공개이므로 읽기 전용 GitHub 토큰이 하나 필요합니다 — 노트북 1번 셀에 만드는 법이 적혀 있습니다.
 `notebooks/lecsum_colab.ipynb` 를 Colab 에 올리고 위에서부터 실행하세요.
 런타임 유형을 **T4 GPU** 로 바꾸면 한 시간짜리 강의가 5분 안에 텍스트로 나옵니다.
 
