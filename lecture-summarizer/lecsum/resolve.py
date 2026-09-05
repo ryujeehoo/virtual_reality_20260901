@@ -15,12 +15,15 @@ from __future__ import annotations
 
 import gzip
 import json
+import os
 import re
+import sys
 import urllib.error
 import urllib.parse
 import urllib.request
 import zlib
 from dataclasses import dataclass
+from pathlib import Path
 
 from .utils import LecsumError, log
 
@@ -202,11 +205,25 @@ def resolve_with_browser(page_url: str, *, cookie: str | None = None, timeout_ms
     return Resolved(url=best, referer=page_url, how="browser")
 
 
-def resolve_stream(page_url: str, *, cookie: str | None = None, use_browser: bool = True) -> Resolved:
+def resolve_stream(
+    page_url: str,
+    *,
+    cookie: str | None = None,
+    use_browser: bool = True,
+    browser: str | None = None,
+) -> Resolved:
     """페이지 주소 → 스트림 주소. 못 찾으면 무엇을 하면 되는지 알려주며 실패한다."""
-    found = resolve_from_page(page_url, cookie=cookie)
-    if found:
-        return found
+    if cookie:
+        # 쿠키를 손에 넣었을 때만 HTTP 로 먼저 시도한다. 없으면 로그인 화면만 온다.
+        found = resolve_from_page(page_url, cookie=cookie)
+        if found:
+            return found
+
+    if use_browser and browser:
+        # 쿠키를 꺼낼 수 없는 브라우저(크롬 127+)면 그 브라우저 본인에게 시킨다.
+        found = resolve_with_real_browser(page_url, browser)
+        if found:
+            return found
     if use_browser:
         found = resolve_with_browser(page_url, cookie=cookie)
         if found:
@@ -217,6 +234,115 @@ def resolve_stream(page_url: str, *, cookie: str | None = None, use_browser: boo
         "  - 브라우저 자동 관찰을 쓰려면: pip install playwright && playwright install chromium\n"
         "  - 그래도 안 되면 개발자도구에서 Copy as cURL 후 --curl-file 로 넘겨 주세요."
     )
+
+
+def user_profile_dir(browser: str) -> Path | None:
+    """설치된 브라우저의 프로필 폴더. 여기를 그대로 열면 로그인 상태가 살아 있다."""
+    home = Path.home()
+    if sys.platform == "win32":
+        local = Path(os.environ.get("LOCALAPPDATA", home / "AppData/Local"))
+        table = {
+            "chrome": local / "Google/Chrome/User Data",
+            "edge": local / "Microsoft/Edge/User Data",
+            "whale": local / "Naver/Naver Whale/User Data",
+            "brave": local / "BraveSoftware/Brave-Browser/User Data",
+        }
+    elif sys.platform == "darwin":
+        support = home / "Library/Application Support"
+        table = {
+            "chrome": support / "Google/Chrome",
+            "edge": support / "Microsoft Edge",
+            "whale": support / "Naver/Whale",
+            "brave": support / "BraveSoftware/Brave-Browser",
+        }
+    else:
+        table = {
+            "chrome": home / ".config/google-chrome",
+            "edge": home / ".config/microsoft-edge",
+            "brave": home / ".config/BraveSoftware/Brave-Browser",
+        }
+    path = table.get(browser.lower())
+    return path if path and path.is_dir() else None
+
+
+# Playwright 가 이 브라우저를 직접 실행할 수 있는지.
+PLAYWRIGHT_CHANNEL = {"chrome": "chrome", "edge": "msedge", "brave": "chrome", "whale": "chrome"}
+
+
+def resolve_with_real_browser(
+    page_url: str,
+    browser: str,
+    *,
+    timeout_ms: int = 60_000,
+    headless: bool = False,
+) -> Resolved | None:
+    """사용자가 쓰는 브라우저를 그 프로필 그대로 띄워 m3u8 을 잡는다.
+
+    크롬 127+ 는 쿠키를 자기만 풀 수 있게 잠갔다. 그러면 쿠키를 꺼내오는 대신
+    크롬 본인에게 시키면 된다. 프로필을 그대로 쓰므로 로그인 상태가 살아 있고,
+    복호화도 크롬이 알아서 한다.
+    """
+    try:
+        from playwright.sync_api import sync_playwright  # type: ignore
+    except ImportError:
+        raise LecsumError(
+            "이 방법은 Playwright 가 필요합니다. 한 번만 설치하면 됩니다.\n"
+            "  pip install playwright\n"
+            "  playwright install chromium\n"
+            "\n"
+            "설치가 싫으면 Copy as cURL 방식을 쓰세요 (설치 없이 바로 됩니다).\n"
+            "  lecsum --curl-file curl.txt --title \"제목\""
+        )
+
+    profile = user_profile_dir(browser)
+    if profile is None:
+        raise LecsumError(f"{browser} 프로필 폴더를 찾지 못했습니다. 설치되어 있나요?")
+
+    hits: list[str] = []
+    log(f"{browser} 를 프로필째 띄웁니다: {profile}")
+    log(f"※ {browser} 가 실행 중이면 먼저 완전히 종료해 주세요.")
+
+    with sync_playwright() as pw:
+        try:
+            context = pw.chromium.launch_persistent_context(
+                str(profile),
+                channel=PLAYWRIGHT_CHANNEL.get(browser.lower(), "chrome"),
+                headless=headless,
+                args=["--profile-directory=Default", "--mute-audio"],
+                no_viewport=True,
+            )
+        except Exception as exc:
+            if "ProcessSingleton" in str(exc) or "already running" in str(exc).lower():
+                raise LecsumError(
+                    f"{browser} 가 이미 실행 중이라 프로필을 열 수 없습니다.\n"
+                    f"{browser} 를 완전히 종료(트레이 아이콘까지)한 뒤 다시 실행하세요."
+                ) from exc
+            raise LecsumError(f"{browser} 를 띄우지 못했습니다: {exc}") from exc
+
+        def on_request(request) -> None:
+            if ".m3u8" in request.url or ".mp4" in request.url:
+                hits.append(request.url)
+
+        page = context.pages[0] if context.pages else context.new_page()
+        page.on("request", on_request)
+        try:
+            page.goto(page_url, timeout=timeout_ms, wait_until="domcontentloaded")
+            for _ in range(6):
+                page.wait_for_timeout(3000)
+                if any(".m3u8" in h for h in hits):
+                    break
+                try:  # 자동재생이 아니면 눌러 본다.
+                    page.mouse.click(640, 360)
+                except Exception:
+                    pass
+        finally:
+            context.close()
+
+    if not hits:
+        return None
+    best = next((h for h in hits if ".m3u8" in h), hits[0])
+    log(f"잡았습니다: {best[:100]}")
+    return Resolved(url=best, referer=page_url, how=f"{browser}-profile")
 
 
 def browser_cookie_header(browser: str, domain: str) -> str | None:

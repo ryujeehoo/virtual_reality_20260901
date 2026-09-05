@@ -32,6 +32,7 @@ class FetchOptions:
     )
     extra_headers: list[str] = field(default_factory=list)
     use_browser: bool = True
+    browser: str | None = None
 
     def header_pairs(self) -> list[tuple[str, str]]:
         pairs: list[tuple[str, str]] = []
@@ -123,7 +124,9 @@ def fetch_video(source: str, workdir: Path, opts: FetchOptions, *, name: str | N
     # 강의 페이지 주소다. 개발자도구를 손으로 여는 대신 스트림 주소를 찾아낸다.
     log("페이지 주소로 판단 → 스트림 주소를 찾습니다.")
     try:
-        resolved = resolve_stream(source, cookie=opts.cookie, use_browser=opts.use_browser)
+        resolved = resolve_stream(
+            source, cookie=opts.cookie, use_browser=opts.use_browser, browser=opts.browser
+        )
     except LecsumError as exc:
         if not shutil.which("yt-dlp"):
             raise

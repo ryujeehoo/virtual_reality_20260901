@@ -154,8 +154,15 @@ def _apply_browser_cookies(args: argparse.Namespace) -> None:
     if not args.source.lower().startswith(("http://", "https://")):
         return
     domain = urlsplit(args.source).netloc
-    args.cookie = browser_cookie_header(args.browser, domain)
-    args.cookies_from_browser = args.cookies_from_browser or args.browser
+    try:
+        args.cookie = browser_cookie_header(args.browser, domain)
+    except LecsumError as exc:
+        # 크롬 127+ 는 쿠키를 못 꺼낸다. 대신 그 브라우저를 직접 띄우는 길이 있다.
+        log(f"쿠키를 꺼내지 못했습니다 — {args.browser} 를 직접 띄우는 방식으로 넘어갑니다.")
+        log(f"  ({str(exc).splitlines()[0]})")
+        args.cookie = None
+    if args.cookie:
+        args.cookies_from_browser = args.cookies_from_browser or args.browser
 
 
 def run_pipeline(args: argparse.Namespace) -> int:
@@ -183,6 +190,7 @@ def run_pipeline(args: argparse.Namespace) -> int:
             cookies_from_browser=args.cookies_from_browser,
             extra_headers=args.header,
             use_browser=not args.no_sniff,
+            browser=args.browser,
         )
         video = fetch_video(args.source, workdir, opts, name=title)
 
