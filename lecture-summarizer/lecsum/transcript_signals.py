@@ -64,8 +64,11 @@ class TermHit:
     timestamps: list[float] = field(default_factory=list)
 
     def render(self) -> str:
-        shown = [format_timestamp(t) for t in self.timestamps[:6]]
-        more = "" if len(self.timestamps) <= 6 else f" 외 {len(self.timestamps) - 6}회"
+        # 한 문장에서 같은 단어를 두 번 말하면 시각이 겹친다. 횟수는 그대로 세되
+        # 표시는 중복을 지운다 — [00:22] [00:22] 는 읽는 사람에게 정보가 아니다.
+        moments = list(dict.fromkeys(self.timestamps))
+        shown = [format_timestamp(t) for t in moments[:6]]
+        more = "" if len(moments) <= 6 else f" 외 {len(moments) - 6}곳"
         return f"- {self.term}: {self.count}회 — [{'] ['.join(shown)}]{more}"
 
 

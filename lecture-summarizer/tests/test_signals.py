@@ -177,6 +177,14 @@ def test_encode_url_leaves_valid_urls_alone():
     assert encode_url(already) == already
 
 
+def test_duplicate_timestamps_not_shown_twice():
+    # 한 문장에 같은 단어가 두 번 나오면 횟수는 2 지만 시각은 하나다.
+    t = Transcript([Segment(0, 5, "캡슐화는 캡슐화입니다."), Segment(60, 65, "캡슐화 복습.")])
+    hit = next(x for x in collect_signals(t, min_count=1).terms if x.term == "캡슐화")
+    assert hit.count == 3
+    assert hit.render().count("[") == 2   # 00:00 과 01:00, 두 곳만
+
+
 if __name__ == "__main__":
     failures = 0
     for name, fn in sorted(globals().items()):
