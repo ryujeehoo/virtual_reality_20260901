@@ -1,0 +1,196 @@
+"""강의 영상 내려받기.
+
+두 가지 경로를 쓴다.
+
+1. yt-dlp: 강의 플레이어 페이지 주소를 그대로 넣었을 때. 쿠키/로그인 세션을 다룰 수 있다.
+2. ffmpeg: 이미 실제 스트림 주소(.m3u8 / .mp4)를 알고 있을 때. 가장 확실하다.
+
+한성대 LMS(learn.hansung.ac.kr)는 로그인이 필요한 스트림이라서, 브라우저 개발자도구에서 뽑은
+m3u8 주소 + Referer + Cookie 조합이 가장 잘 통한다. README 의 "강의 주소 찾기" 참고.
+"""
+
+from __future__ import annotations
+
+import shutil
+import sys
+import urllib.error
+import urllib.request
+from dataclasses import dataclass, field, replace
+from pathlib import Path
+from urllib.parse import urlparse
+
+from .resolve import resolve_stream
+from .utils import LecsumError, encode_url, log, require_binary, run, slugify
+
+
+@dataclass
+class FetchOptions:
+    referer: str | None = None
+    cookie: str | None = None
+    cookies_file: Path | None = None
+    cookies_from_browser: str | None = None
+    user_agent: str = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+    )
+    extra_headers: list[str] = field(default_factory=list)
+    use_browser: bool = True
+    browser: str | None = None
+
+    def header_pairs(self) -> list[tuple[str, str]]:
+        pairs: list[tuple[str, str]] = []
+        if self.referer:
+            pairs.append(("Referer", self.referer))
+        if self.cookie:
+            pairs.append(("Cookie", self.cookie))
+        for raw in self.extra_headers:
+            if ":" not in raw:
+                raise LecsumError(f"--header 형식이 잘못됐습니다: {raw!r} (예: 'Origin: https://...')")
+            name, _, value = raw.partition(":")
+            pairs.append((name.strip(), value.strip()))
+        return pairs
+
+
+def _is_segmented(url: str) -> bool:
+    """HLS/DASH 처럼 조각으로 나뉘어 오는 스트림인가. 이때만 ffmpeg 이 필요하다."""
+    path = urlparse(url).path.lower()
+    return path.endswith((".m3u8", ".mpd", ".ts"))
+
+
+def _is_direct_stream(url: str) -> bool:
+    path = urlparse(url).path.lower()
+    return path.endswith((".m3u8", ".mp4", ".m4a", ".mpd", ".ts", ".mov", ".mkv", ".webm"))
+
+
+def _download_direct(url: str, dest: Path, opts: FetchOptions) -> Path:
+    """mp4 처럼 파일 하나로 오는 것은 바이트 그대로 받는다.
+
+    ffmpeg 으로 리먹싱하면 원격 mp4 의 moov 탐색과 재연결이 얽혀 파일이 깨진다.
+    조각나 있지 않은 입력은 그냥 내려받는 게 빠르고 정확하다.
+    """
+    headers = {"User-Agent": opts.user_agent}
+    headers.update(dict(opts.header_pairs()))
+    request = urllib.request.Request(encode_url(url), headers=headers)
+
+    log(f"직접 내려받습니다: {dest.name}")
+    try:
+        with urllib.request.urlopen(request, timeout=120) as resp, dest.open("wb") as out:
+            total = int(resp.headers.get("Content-Length") or 0)
+            done = 0
+            while chunk := resp.read(1 << 20):
+                out.write(chunk)
+                done += len(chunk)
+                if total:
+                    print(f"\r  {done / 1e6:.1f} / {total / 1e6:.1f} MB", end="", file=sys.stderr)
+            if total:
+                print(file=sys.stderr)
+    except urllib.error.HTTPError as exc:
+        dest.unlink(missing_ok=True)
+        raise LecsumError(
+            f"다운로드 실패 ({exc.code}). 쿠키가 만료됐거나 주소가 더 이상 유효하지 않습니다."
+        ) from exc
+    except urllib.error.URLError as exc:
+        dest.unlink(missing_ok=True)
+        raise LecsumError(f"연결하지 못했습니다: {exc.reason}") from exc
+
+    if dest.stat().st_size == 0:
+        dest.unlink(missing_ok=True)
+        raise LecsumError("받은 파일이 비어 있습니다.")
+    return dest
+
+
+def _download_with_ffmpeg(url: str, dest: Path, opts: FetchOptions) -> Path:
+    ffmpeg = require_binary("ffmpeg", "https://ffmpeg.org 에서 설치하거나 `brew install ffmpeg` / `winget install ffmpeg`.")
+    cmd = [ffmpeg, "-y", "-loglevel", "warning", "-stats"]
+
+    headers = opts.header_pairs()
+    if headers:
+        cmd += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in headers)]
+    cmd += ["-user_agent", opts.user_agent]
+    cmd += ["-protocol_whitelist", "file,http,https,tcp,tls,crypto"]
+    # 끊긴 세그먼트에서 멈추지 않도록.
+    cmd += ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "10"]
+    cmd += ["-i", url, "-c", "copy"]
+    # aac_adtstoasc 는 ADTS(HLS/TS) 로 실려 온 AAC 를 mp4 에 담을 때만 필요하다.
+    # 이미 mp4/fMP4 인 입력에 걸면 "Error parsing ADTS frame header" 로 깨진다.
+    if _is_segmented(url):
+        cmd += ["-bsf:a", "aac_adtstoasc"]
+    cmd += [str(dest)]
+
+    run(cmd, quiet=False)
+    if not dest.exists() or dest.stat().st_size == 0:
+        raise LecsumError("ffmpeg 이 파일을 만들지 못했습니다. 주소나 쿠키가 만료됐을 수 있습니다.")
+    return dest
+
+
+def _download_with_ytdlp(url: str, dest: Path, opts: FetchOptions) -> Path:
+    ytdlp = shutil.which("yt-dlp")
+    if not ytdlp:
+        raise LecsumError(
+            "yt-dlp 가 없습니다. `pip install yt-dlp` 로 설치하거나,\n"
+            "브라우저 개발자도구에서 .m3u8 주소를 직접 뽑아 넣어 주세요 (README 참고)."
+        )
+    cmd = [ytdlp, "--no-playlist", "-o", str(dest), "--force-overwrites"]
+    if opts.referer:
+        cmd += ["--referer", opts.referer]
+    if opts.cookies_file:
+        cmd += ["--cookies", str(opts.cookies_file)]
+    if opts.cookies_from_browser:
+        cmd += ["--cookies-from-browser", opts.cookies_from_browser]
+    cmd += ["--user-agent", opts.user_agent]
+    for name, value in opts.header_pairs():
+        if name.lower() == "referer":
+            continue
+        cmd += ["--add-header", f"{name}:{value}"]
+    cmd += [url]
+
+    run(cmd, quiet=False)
+    if dest.exists():
+        return dest
+    # yt-dlp 가 확장자를 바꿔 저장했을 수 있다.
+    matches = sorted(dest.parent.glob(dest.stem + ".*"))
+    if not matches:
+        raise LecsumError("yt-dlp 가 파일을 만들지 못했습니다.")
+    return matches[0]
+
+
+def fetch_video(source: str, workdir: Path, opts: FetchOptions, *, name: str | None = None) -> Path:
+    """URL 또는 로컬 경로를 받아 영상 파일 경로를 돌려준다."""
+    local = Path(source).expanduser()
+    if local.exists():
+        log(f"로컬 파일 사용: {local}")
+        return local
+
+    if not source.lower().startswith(("http://", "https://")):
+        raise LecsumError(f"파일도 URL도 아닙니다: {source}")
+
+    workdir.mkdir(parents=True, exist_ok=True)
+    stem = slugify(name or Path(urlparse(source).path).stem or "lecture")
+    dest = workdir / f"{stem}.mp4"
+
+    if _is_segmented(source):
+        log("조각난 스트림(HLS/DASH) → ffmpeg 으로 이어붙여 받습니다.")
+        return _download_with_ffmpeg(source, dest, opts)
+    if _is_direct_stream(source):
+        dest = dest.with_suffix(Path(urlparse(source).path).suffix or ".mp4")
+        return _download_direct(source, dest, opts)
+
+    # 강의 페이지 주소다. 개발자도구를 손으로 여는 대신 스트림 주소를 찾아낸다.
+    log("페이지 주소로 판단 → 스트림 주소를 찾습니다.")
+    try:
+        resolved = resolve_stream(
+            source, cookie=opts.cookie, use_browser=opts.use_browser, browser=opts.browser
+        )
+    except LecsumError as exc:
+        if not shutil.which("yt-dlp"):
+            raise
+        log(f"자동 탐색 실패({exc}). yt-dlp 로 한 번 더 시도합니다.")
+        return _download_with_ytdlp(source, dest, opts)
+
+    log(f"찾았습니다 ({resolved.how}). 내려받습니다.")
+    stream_opts = replace(opts, referer=opts.referer or resolved.referer)
+    if _is_segmented(resolved.url):
+        return _download_with_ffmpeg(resolved.url, dest, stream_opts)
+    if _is_direct_stream(resolved.url):
+        return _download_direct(resolved.url, dest.with_suffix(".mp4"), stream_opts)
+    return _download_with_ytdlp(resolved.url, dest, stream_opts)
