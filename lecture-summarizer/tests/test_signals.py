@@ -8,11 +8,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lecsum.curlparse import parse_curl
+from lecsum.download import _is_direct_stream, _is_segmented
 from lecsum.resolve import _endpoint_candidates, find_streams, looks_like_login_page
 from lecsum.summarize import chunk_transcript
 from lecsum.transcribe import Segment, Transcript
 from lecsum.transcript_signals import collect_signals
-from lecsum.utils import format_timestamp, slugify
+from lecsum.utils import encode_url, format_timestamp, slugify
 
 
 def sample() -> Transcript:
@@ -150,6 +151,30 @@ def test_login_page_detected():
 
 def test_real_page_not_mistaken_for_login():
     assert not looks_like_login_page(f'<video><source src="{REAL_STREAM}"></video>')
+
+
+def test_segmented_vs_single_file():
+    # HLS/DASH 만 ffmpeg 으로 이어붙인다. mp4 를 리먹싱하면 파일이 깨진다.
+    assert _is_segmented(REAL_STREAM)
+    assert _is_segmented("https://cdn/a.mpd")
+    assert not _is_segmented("https://cdn/lecture.mp4")
+    # 경로 중간에 .mp4 가 들어 있어도 끝이 m3u8 이면 조각난 스트림이다.
+    assert _is_segmented("https://cdn/v/abc.mp4/index.m3u8")
+    # 둘 다 '직접 받을 수 있는 주소'이긴 하다.
+    assert _is_direct_stream("https://cdn/lecture.mp4")
+
+
+def test_encode_url_handles_hangul():
+    # urllib 은 비ASCII 주소를 그대로 받으면 UnicodeEncodeError 로 죽는다.
+    assert encode_url("http://x/강의.mp4") == "http://x/%EA%B0%95%EC%9D%98.mp4"
+    assert encode_url("http://x/a b.mp4") == "http://x/a%20b.mp4"
+
+
+def test_encode_url_leaves_valid_urls_alone():
+    # 네이버 CDN 토큰의 ~ 와 __, 이미 인코딩된 %XX 는 건드리면 안 된다.
+    assert encode_url(REAL_STREAM) == REAL_STREAM
+    already = "https://x/%ED%95%9C%EA%B8%80.mp4?tk=a~b_c"
+    assert encode_url(already) == already
 
 
 if __name__ == "__main__":

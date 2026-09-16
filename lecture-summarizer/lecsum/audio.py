@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 from .utils import LecsumError, log, media_duration, require_binary, run
 
 # 음성인식 모델은 대부분 16 kHz 모노를 기대한다.
 SAMPLE_RATE = 16_000
+
+# 이보다 짧은 조각은 버린다. ffmpeg 가 끝에 남기는 꼬리 조각을 걸러내기 위한 값.
+MIN_CHUNK_SECONDS = 1.0
 
 
 def extract_audio(video: Path, dest: Path) -> Path:
@@ -58,21 +60,35 @@ def split_audio(audio: Path, outdir: Path, *, chunk_seconds: int = 600) -> list[
         stale.unlink()
 
     pattern = outdir / f"chunk_%04d{audio.suffix}"
+    # 스트림 복사와 -ac/-ar 은 같이 쓸 수 없다 (복사하면 리샘플이 조용히 무시된다).
+    # 어차피 16 kHz 모노로 맞춰 두려는 것이므로 다시 인코딩한다.
+    codec = ["-c:a", "pcm_s16le"] if audio.suffix == ".wav" else ["-c:a", "aac", "-b:a", "48k"]
     run([
         ffmpeg, "-y", "-loglevel", "error",
         "-i", str(audio),
         "-f", "segment",
         "-segment_time", str(chunk_seconds),
         "-reset_timestamps", "1",
-        "-c", "copy" if audio.suffix != ".wav" else "pcm_s16le",
+        *codec,
         "-ac", "1", "-ar", str(SAMPLE_RATE),
         str(pattern),
     ])
 
+    # 시작 시각은 실제 길이를 누적해서 구한다. 조각 경계는 요청한 값과 조금씩
+    # 어긋나기 때문에, index * chunk_seconds 로 계산하면 뒤로 갈수록 자막이 밀린다.
     chunks: list[tuple[Path, float]] = []
+    offset = 0.0
     for path in sorted(outdir.glob(f"chunk_*{audio.suffix}")):
-        index = int(re.search(r"(\d+)", path.stem).group(1))
-        chunks.append((path, float(index * chunk_seconds)))
+        length = media_duration(path)
+        # ffmpeg 가 끝에 만드는 0.0x 초짜리 꼬리 조각은 버린다.
+        # 인식할 내용이 없는데 클라우드 백엔드에서는 요청 하나를 더 쓰고,
+        # 너무 짧은 오디오를 거부하는 서비스에서는 강의 끝에서 전체가 실패한다.
+        if length is not None and length < MIN_CHUNK_SECONDS:
+            path.unlink(missing_ok=True)
+            continue
+        chunks.append((path, offset))
+        offset += length if length is not None else float(chunk_seconds)
+
     if not chunks:
         raise LecsumError("오디오 분할에 실패했습니다.")
     log(f"{len(chunks)}개 조각으로 분할 ({chunk_seconds}초 단위)")

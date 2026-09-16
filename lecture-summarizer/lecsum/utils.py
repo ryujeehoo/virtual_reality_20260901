@@ -8,6 +8,7 @@ import subprocess
 import sys
 import unicodedata
 from pathlib import Path
+from urllib.parse import quote, urlsplit, urlunsplit
 
 
 class LecsumError(RuntimeError):
@@ -40,6 +41,23 @@ def run(cmd: list[str], *, quiet: bool = True) -> None:
             f"명령이 실패했습니다 (exit {proc.returncode}): {' '.join(cmd[:3])} ...\n"
             + "\n".join(tail)
         )
+
+
+def encode_url(url: str) -> str:
+    """URL 에 든 한글·공백 등 비ASCII 문자를 퍼센트 인코딩한다.
+
+    urllib 은 비ASCII 가 섞인 주소를 그대로 받으면 UnicodeEncodeError 로 죽는다.
+    브라우저에서 복사한 주소에는 한글 파일명이 들어 있을 수 있다.
+    이미 인코딩된 %XX 는 그대로 둔다(safe 에 % 포함).
+    """
+    split = urlsplit(url)
+    return urlunsplit((
+        split.scheme,
+        split.netloc.encode("idna").decode("ascii") if not split.netloc.isascii() else split.netloc,
+        quote(split.path, safe="/%:@!$&'()*+,;=~"),
+        quote(split.query, safe="=&/%:@!$'()*+,;~?"),
+        quote(split.fragment, safe="/%:@!$&'()*+,;=~?"),
+    ))
 
 
 def slugify(text: str, fallback: str = "lecture") -> str:

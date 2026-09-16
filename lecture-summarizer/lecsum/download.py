@@ -12,12 +12,15 @@ m3u8 주소 + Referer + Cookie 조합이 가장 잘 통한다. README 의 "강�
 from __future__ import annotations
 
 import shutil
+import sys
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from urllib.parse import urlparse
 
 from .resolve import resolve_stream
-from .utils import LecsumError, log, require_binary, run, slugify
+from .utils import LecsumError, encode_url, log, require_binary, run, slugify
 
 
 @dataclass
@@ -48,9 +51,52 @@ class FetchOptions:
         return pairs
 
 
+def _is_segmented(url: str) -> bool:
+    """HLS/DASH 처럼 조각으로 나뉘어 오는 스트림인가. 이때만 ffmpeg 이 필요하다."""
+    path = urlparse(url).path.lower()
+    return path.endswith((".m3u8", ".mpd", ".ts"))
+
+
 def _is_direct_stream(url: str) -> bool:
     path = urlparse(url).path.lower()
     return path.endswith((".m3u8", ".mp4", ".m4a", ".mpd", ".ts", ".mov", ".mkv", ".webm"))
+
+
+def _download_direct(url: str, dest: Path, opts: FetchOptions) -> Path:
+    """mp4 처럼 파일 하나로 오는 것은 바이트 그대로 받는다.
+
+    ffmpeg 으로 리먹싱하면 원격 mp4 의 moov 탐색과 재연결이 얽혀 파일이 깨진다.
+    조각나 있지 않은 입력은 그냥 내려받는 게 빠르고 정확하다.
+    """
+    headers = {"User-Agent": opts.user_agent}
+    headers.update(dict(opts.header_pairs()))
+    request = urllib.request.Request(encode_url(url), headers=headers)
+
+    log(f"직접 내려받습니다: {dest.name}")
+    try:
+        with urllib.request.urlopen(request, timeout=120) as resp, dest.open("wb") as out:
+            total = int(resp.headers.get("Content-Length") or 0)
+            done = 0
+            while chunk := resp.read(1 << 20):
+                out.write(chunk)
+                done += len(chunk)
+                if total:
+                    print(f"\r  {done / 1e6:.1f} / {total / 1e6:.1f} MB", end="", file=sys.stderr)
+            if total:
+                print(file=sys.stderr)
+    except urllib.error.HTTPError as exc:
+        dest.unlink(missing_ok=True)
+        raise LecsumError(
+            f"다운로드 실패 ({exc.code}). 쿠키가 만료됐거나 주소가 더 이상 유효하지 않습니다."
+        ) from exc
+    except urllib.error.URLError as exc:
+        dest.unlink(missing_ok=True)
+        raise LecsumError(f"연결하지 못했습니다: {exc.reason}") from exc
+
+    if dest.stat().st_size == 0:
+        dest.unlink(missing_ok=True)
+        raise LecsumError("받은 파일이 비어 있습니다.")
+    return dest
 
 
 def _download_with_ffmpeg(url: str, dest: Path, opts: FetchOptions) -> Path:
@@ -64,7 +110,12 @@ def _download_with_ffmpeg(url: str, dest: Path, opts: FetchOptions) -> Path:
     cmd += ["-protocol_whitelist", "file,http,https,tcp,tls,crypto"]
     # 끊긴 세그먼트에서 멈추지 않도록.
     cmd += ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "10"]
-    cmd += ["-i", url, "-c", "copy", "-bsf:a", "aac_adtstoasc", str(dest)]
+    cmd += ["-i", url, "-c", "copy"]
+    # aac_adtstoasc 는 ADTS(HLS/TS) 로 실려 온 AAC 를 mp4 에 담을 때만 필요하다.
+    # 이미 mp4/fMP4 인 입력에 걸면 "Error parsing ADTS frame header" 로 깨진다.
+    if _is_segmented(url):
+        cmd += ["-bsf:a", "aac_adtstoasc"]
+    cmd += [str(dest)]
 
     run(cmd, quiet=False)
     if not dest.exists() or dest.stat().st_size == 0:
@@ -117,9 +168,12 @@ def fetch_video(source: str, workdir: Path, opts: FetchOptions, *, name: str | N
     stem = slugify(name or Path(urlparse(source).path).stem or "lecture")
     dest = workdir / f"{stem}.mp4"
 
-    if _is_direct_stream(source):
-        log("스트림 주소로 판단 → ffmpeg 으로 내려받습니다.")
+    if _is_segmented(source):
+        log("조각난 스트림(HLS/DASH) → ffmpeg 으로 이어붙여 받습니다.")
         return _download_with_ffmpeg(source, dest, opts)
+    if _is_direct_stream(source):
+        dest = dest.with_suffix(Path(urlparse(source).path).suffix or ".mp4")
+        return _download_direct(source, dest, opts)
 
     # 강의 페이지 주소다. 개발자도구를 손으로 여는 대신 스트림 주소를 찾아낸다.
     log("페이지 주소로 판단 → 스트림 주소를 찾습니다.")
@@ -135,6 +189,8 @@ def fetch_video(source: str, workdir: Path, opts: FetchOptions, *, name: str | N
 
     log(f"찾았습니다 ({resolved.how}). 내려받습니다.")
     stream_opts = replace(opts, referer=opts.referer or resolved.referer)
-    if _is_direct_stream(resolved.url):
+    if _is_segmented(resolved.url):
         return _download_with_ffmpeg(resolved.url, dest, stream_opts)
+    if _is_direct_stream(resolved.url):
+        return _download_direct(resolved.url, dest.with_suffix(".mp4"), stream_opts)
     return _download_with_ytdlp(resolved.url, dest, stream_opts)

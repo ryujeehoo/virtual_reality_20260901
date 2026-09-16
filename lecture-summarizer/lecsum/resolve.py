@@ -53,7 +53,7 @@ def http_get(url: str, *, cookie: str | None = None, referer: str | None = None,
         headers["Cookie"] = cookie
     if referer:
         headers["Referer"] = referer
-    req = urllib.request.Request(url, headers=headers)
+    req = urllib.request.Request(encode_url(url), headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return _decode(resp.read(), resp.headers.get("Content-Encoding"))
